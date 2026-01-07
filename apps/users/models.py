@@ -1,7 +1,10 @@
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import EmailValidator
-
+from django.conf import settings
+from django.utils import timezone
+from django.contrib.auth.hashers import make_password, check_password
+from datetime import timedelta
 
 class UserManager(BaseUserManager):
     def create_user(self, email, phone_number, password=None, **extra_fields):
@@ -64,14 +67,12 @@ class UserProfile(models.Model):
     avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
     date_of_birth = models.DateField(null=True, blank=True)
 
-    # для профиля (карточки)
-    goals_achieved = models.PositiveIntegerField(default=0)   # "Цель достигнута"
-    saving_days = models.PositiveIntegerField(default=0)      # "Дней экономии"
+    goals_achieved = models.PositiveIntegerField(default=0)   
+    saving_days = models.PositiveIntegerField(default=0)    
 
-    # настройки экрана (по желанию, но удобно)
     notifications_enabled = models.BooleanField(default=True)
-    theme = models.CharField(max_length=10, default="system")  # light/dark/system
-    language = models.CharField(max_length=5, default="ru")    # ru/ky/en
+    theme = models.CharField(max_length=10, default="system") 
+    language = models.CharField(max_length=5, default="ru")  
 
     def __str__(self):
         return f"Profile of {self.user.email}"
@@ -100,3 +101,62 @@ class UserPrivilege(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.privilege.name}"
+
+
+class SocialAccount(models.Model):
+    PROVIDER_CHOICES = (
+        ("google", "Google"),
+        ("apple", "Apple"),
+    )
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="social_accounts")
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES)
+    uid = models.CharField(max_length=255) 
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("provider", "uid")
+
+
+class OneTimeCode(models.Model):
+    PURPOSE_RESET = "reset_password"
+    PURPOSE_CHOICES = (
+        (PURPOSE_RESET, "Reset password"),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="otp_codes")
+    purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES)
+
+    code_hash = models.CharField(max_length=128)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "purpose", "created_at"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def set_code(self, code: str):
+        self.code_hash = make_password(code)
+
+    def check_code(self, code: str) -> bool:
+        return check_password(code, self.code_hash)
+
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    def is_used(self) -> bool:
+        return self.used_at is not None
+
+    @classmethod
+    def create(cls, *, user: User, purpose: str, ttl_minutes: int = 10):
+        return cls(
+            user=user,
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(minutes=ttl_minutes),
+        )

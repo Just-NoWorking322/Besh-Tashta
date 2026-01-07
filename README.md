@@ -1,4 +1,4 @@
-"""Проект: Беш-Ташта
+Проект: Беш-Ташта
 
 >----- Ориентир -----<
 
@@ -50,4 +50,3 @@ https://www.figma.com/design/HodhFz2wvDMKnWUpoTElmY/Besh-Tashta?node-id=0-1&p=f&
 
 >-- - -- -- Git Hub -- -- - --<
 https://github.com/Just-NoWorking322/Besh-Tashta
-"""

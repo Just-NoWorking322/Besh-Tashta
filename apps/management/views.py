@@ -162,7 +162,7 @@ class TransactionListCreateView(DefaultAccountMixin, DateRangeFilterMixin, gener
             .order_by("-occurred_at", "-id")
         )
 
-        type_ = self.request.query_params.get("type")  # INCOME/EXPENSE
+        type_ = self.request.query_params.get("type") 
         if type_:
             qs = qs.filter(type=type_)
 
@@ -207,7 +207,7 @@ class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
     def get_queryset(self):
         qs = Debt.objects.filter(user=self.request.user).order_by("is_closed", "-created_at", "-id")
 
-        kind = self.request.query_params.get("kind")  # RECEIVABLE/PAYABLE
+        kind = self.request.query_params.get("kind")  
         if kind:
             qs = qs.filter(kind=kind)
 
@@ -219,7 +219,6 @@ class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
         if q:
             qs = qs.filter(Q(person_name__icontains=q) | Q(description__icontains=q))
 
-        # due_date фильтр:
         due_from = self.request.query_params.get("due_from")
         due_to = self.request.query_params.get("due_to")
 
@@ -340,3 +339,20 @@ class StatsByCategoryView(DateRangeFilterMixin, APIView):
         ]
 
         return Response({"type": tx_type, "items": items})
+
+
+from django.core.cache import cache
+
+def get_analytics(payload: dict):
+    cache_key = f"management:analytics:{hash(str(sorted(payload.items())))}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return {"cached": True, "data": cached}
+
+    data = {
+        "totals": {},
+        "groups": {},
+    }
+
+    cache.set(cache_key, data, timeout=600)  
+    return {"cached": False, "data": data}

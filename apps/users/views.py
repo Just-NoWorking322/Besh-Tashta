@@ -78,11 +78,9 @@ class ProfileStatsMixin:
         return profile
 
     def is_premium(self, user) -> bool:
-        # Можно ужесточить: privilege__code="premium", если добавишь code
         return UserPrivilege.objects.filter(user=user).exists()
 
     def calc_money_stats(self, user):
-        # берем из apps.management Transaction
         from apps.management.models import Transaction
 
         income = Transaction.objects.filter(user=user, type=Transaction.INCOME).aggregate(
@@ -173,8 +171,6 @@ class MeView(ProfileStatsMixin, APIView):
     def patch(self, request):
         profile = self.get_profile(request.user)
 
-        # Можно присылать одним объектом:
-        # { "user": {...}, "profile": {...} }
         user_data = request.data.get("user", {})
         profile_data = request.data.get("profile", {})
 

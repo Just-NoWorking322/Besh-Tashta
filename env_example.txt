@@ -7,4 +7,4 @@ DB_NAME=bigbee
 DB_USER=kuma
 DB_USER_PASSWORD=geeksstudents
 DB_HOST=bee.webtm.ru
-DB_PORT=5432
+DB_PORT=5432  

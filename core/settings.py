@@ -28,7 +28,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
+    "drf_spectacular",
     "rest_framework",
     "corsheaders",
     "django_filters",
@@ -105,6 +105,7 @@ REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
     ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SIMPLE_JWT = {
@@ -119,7 +120,55 @@ SIMPLE_JWT = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Besh-Tashta API",
+    "VERSION": "1.0.0",
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+        }
+    },
+    "SECURITY": [{"BearerAuth": []}],
+}
 
+
+EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST")
+EMAIL_PORT = env("EMAIL_PORT", cast=int, default=587)
+
+EMAIL_USE_TLS = env("EMAIL_USE_TLS", cast=bool, default=True)
+EMAIL_USE_SSL = env("EMAIL_USE_SSL", cast=bool, default=False)
+
+EMAIL_HOST_USER = env("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD")
+
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER)
+
+EMAIL_TIMEOUT = env("EMAIL_TIMEOUT", cast=int, default=10)
+
+SOCIAL_AUTH_GOOGLE_CLIENT_ID = env("SOCIAL_AUTH_GOOGLE_CLIENT_ID", default="")
+SOCIAL_AUTH_APPLE_CLIENT_ID = env("SOCIAL_AUTH_APPLE_CLIENT_ID", default="")
+
+import os
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+# Django cache -> Redis (для аналитики)
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": REDIS_URL,
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        "KEY_PREFIX": "beshtash",
+    }
+}
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL 
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Asia/Bishkek"
 
 # from pathlib import Path
 # from datetime import timedelta
