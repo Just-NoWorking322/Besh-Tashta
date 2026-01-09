@@ -1,11 +1,13 @@
 from decimal import Decimal
+from urllib.parse import urlencode
 
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Sum, Q
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-
+from django_redis import get_redis_connection
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -19,7 +21,42 @@ from .serializers import (
     DebtSerializer,
 )
 
+CACHE_TTL = 600  # 10 минту
 
+# -------------------------
+# Cache helpers
+# -------------------------
+def build_cache_key(prefix: str, user_id: int, params) -> str:
+    """
+    Делает стабильный ключ кэша на основе:
+    - prefix (название эндпоинта)
+    - user_id
+    - query params (без refresh)
+    """
+    items = []
+    # QueryDict: используем lists() чтобы не потерять параметры с несколькими значениями
+    for k, values in params.lists():
+        if k == "refresh":
+            continue
+        for v in values:
+            items.append((k, v))
+
+    qs = urlencode(sorted(items), doseq=True)
+    return f"mgmt:{prefix}:u{user_id}:{qs or 'noqs'}"
+
+
+def invalidate_user_mgmt_cache(user_id: int) -> None:
+    try:
+        conn = get_redis_connection("default")
+        for key in conn.scan_iter(match=f"beshtash:mgmt:*:u{user_id}:*"):
+            conn.delete(key)
+    except Exception:
+        pass
+
+
+# -------------------------
+# Mixins
+# -------------------------
 class DefaultAccountMixin:
     """
     Миксин: гарантирует что у юзера есть хотя бы один Account.
@@ -56,13 +93,22 @@ class DateRangeFilterMixin:
 
 
 # -------------------------
-# Dashboard
+# Dashboard (cached)
 # -------------------------
 class DashboardView(DefaultAccountMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         self.get_or_create_default_account(request.user)
+
+        cache_key = build_cache_key("dashboard", request.user.id, request.query_params)
+
+        if request.query_params.get("refresh") != "1":
+            cached = cache.get(cache_key)
+            if cached is not None:
+                resp = Response(cached)
+                resp["X-Cache"] = "HIT"
+                return resp
 
         income = Transaction.objects.filter(
             user=request.user, type=Transaction.INCOME
@@ -86,7 +132,7 @@ class DashboardView(DefaultAccountMixin, APIView):
             .order_by("-occurred_at", "-id")[:10]
         )
 
-        return Response({
+        data = {
             "balance": str(income - expense),
             "income_total": str(income),
             "expense_total": str(expense),
@@ -97,21 +143,31 @@ class DashboardView(DefaultAccountMixin, APIView):
             "last_transactions": TransactionSerializer(
                 last_transactions, many=True, context={"request": request}
             ).data,
-        })
+        }
+
+        cache.set(cache_key, data, CACHE_TTL)
+        resp = Response(data)
+        resp["X-Cache"] = "MISS"
+        return resp
 
 
 # -------------------------
-# Accounts
+# Accounts (CRUD + invalidate)
 # -------------------------
 class AccountListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = AccountSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Account.objects.none()
+        if not self.request.user.is_authenticated:
+            return Account.objects.none()
         return Account.objects.filter(user=self.request.user).order_by("id")
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+        invalidate_user_mgmt_cache(self.request.user.id)
 
 
 class AccountDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -119,17 +175,34 @@ class AccountDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AccountSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Account.objects.none()
+        if not self.request.user.is_authenticated:
+            return Account.objects.none()
         return Account.objects.filter(user=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_user_mgmt_cache(self.request.user.id)
 
 
 # -------------------------
-# Categories
+# Categories (CRUD + invalidate)
 # -------------------------
 class CategoryListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CategorySerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Category.objects.none()
+        if not self.request.user.is_authenticated:
+            return Category.objects.none()
+
         qs = Category.objects.filter(user=self.request.user).order_by("type", "name")
         type_ = self.request.query_params.get("type")  # INCOME/EXPENSE
         if type_:
@@ -138,6 +211,7 @@ class CategoryListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+        invalidate_user_mgmt_cache(self.request.user.id)
 
 
 class CategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -145,24 +219,43 @@ class CategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CategorySerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Category.objects.none()
+        if not self.request.user.is_authenticated:
+            return Category.objects.none()
         return Category.objects.filter(user=self.request.user)
 
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
 
 # -------------------------
-# Transactions
+# Transactions (CRUD + invalidate)
 # -------------------------
-class TransactionListCreateView(DefaultAccountMixin, DateRangeFilterMixin, generics.ListCreateAPIView):
+class TransactionListCreateView(
+    DefaultAccountMixin, DateRangeFilterMixin, generics.ListCreateAPIView
+):
     permission_classes = [IsAuthenticated]
     serializer_class = TransactionSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Transaction.objects.none()
+        if not self.request.user.is_authenticated:
+            return Transaction.objects.none()
+
         qs = (
             Transaction.objects.filter(user=self.request.user)
             .select_related("account", "category")
             .order_by("-occurred_at", "-id")
         )
 
-        type_ = self.request.query_params.get("type") 
+        type_ = self.request.query_params.get("type")
         if type_:
             qs = qs.filter(type=type_)
 
@@ -182,8 +275,13 @@ class TransactionListCreateView(DefaultAccountMixin, DateRangeFilterMixin, gener
         return qs
 
     def perform_create(self, serializer):
-        self.get_or_create_default_account(self.request.user)
-        serializer.save(user=self.request.user)
+        account = serializer.validated_data.get("account")
+        if not account:
+            account = self.get_or_create_default_account(self.request.user)
+
+        serializer.save(user=self.request.user, account=account)
+        invalidate_user_mgmt_cache(self.request.user.id)
+
 
 
 class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -191,23 +289,43 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = TransactionSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Transaction.objects.none()
+        if not self.request.user.is_authenticated:
+            return Transaction.objects.none()
+
         return (
             Transaction.objects.filter(user=self.request.user)
             .select_related("account", "category")
         )
 
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
 
 # -------------------------
-# Debts
+# Debts (CRUD + invalidate)
 # -------------------------
 class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = DebtSerializer
 
     def get_queryset(self):
-        qs = Debt.objects.filter(user=self.request.user).order_by("is_closed", "-created_at", "-id")
+        if getattr(self, "swagger_fake_view", False):
+            return Debt.objects.none()
+        if not self.request.user.is_authenticated:
+            return Debt.objects.none()
 
-        kind = self.request.query_params.get("kind")  
+        qs = Debt.objects.filter(user=self.request.user).order_by(
+            "is_closed", "-created_at", "-id"
+        )
+
+        kind = self.request.query_params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
 
@@ -236,6 +354,7 @@ class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+        invalidate_user_mgmt_cache(self.request.user.id)
 
 
 class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -243,7 +362,19 @@ class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = DebtSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Debt.objects.none()
+        if not self.request.user.is_authenticated:
+            return Debt.objects.none()
         return Debt.objects.filter(user=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_user_mgmt_cache(self.request.user.id)
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_user_mgmt_cache(self.request.user.id)
 
 
 class DebtCloseView(DefaultAccountMixin, APIView):
@@ -284,16 +415,26 @@ class DebtCloseView(DefaultAccountMixin, APIView):
             occurred_at=timezone.now(),
         )
 
+        invalidate_user_mgmt_cache(request.user.id)
         return Response({"detail": "Долг закрыт и добавлен в историю операций."}, status=status.HTTP_200_OK)
 
 
 # -------------------------
-# Stats
+# Stats (cached)
 # -------------------------
 class StatsSummaryView(DateRangeFilterMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        cache_key = build_cache_key("stats_summary", request.user.id, request.query_params)
+
+        if request.query_params.get("refresh") != "1":
+            cached = cache.get(cache_key)
+            if cached is not None:
+                resp = Response(cached)
+                resp["X-Cache"] = "HIT"
+                return resp
+
         qs = Transaction.objects.filter(user=request.user)
         qs = self.apply_date_range(qs, request, field="occurred_at")
 
@@ -304,11 +445,16 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
             s=Coalesce(Sum("amount"), Decimal("0"))
         )["s"]
 
-        return Response({
+        data = {
             "income_total": str(income),
             "expense_total": str(expense),
             "balance": str(income - expense),
-        })
+        }
+
+        cache.set(cache_key, data, CACHE_TTL)
+        resp = Response(data)
+        resp["X-Cache"] = "MISS"
+        return resp
 
 
 class StatsByCategoryView(DateRangeFilterMixin, APIView):
@@ -318,6 +464,15 @@ class StatsByCategoryView(DateRangeFilterMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        cache_key = build_cache_key("stats_by_category", request.user.id, request.query_params)
+
+        if request.query_params.get("refresh") != "1":
+            cached = cache.get(cache_key)
+            if cached is not None:
+                resp = Response(cached)
+                resp["X-Cache"] = "HIT"
+                return resp
+
         tx_type = request.query_params.get("type", Transaction.EXPENSE)
 
         qs = Transaction.objects.filter(user=request.user, type=tx_type)
@@ -338,21 +493,8 @@ class StatsByCategoryView(DateRangeFilterMixin, APIView):
             for r in rows
         ]
 
-        return Response({"type": tx_type, "items": items})
-
-
-from django.core.cache import cache
-
-def get_analytics(payload: dict):
-    cache_key = f"management:analytics:{hash(str(sorted(payload.items())))}"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return {"cached": True, "data": cached}
-
-    data = {
-        "totals": {},
-        "groups": {},
-    }
-
-    cache.set(cache_key, data, timeout=600)  
-    return {"cached": False, "data": data}
+        data = {"type": tx_type, "items": items}
+        cache.set(cache_key, data, CACHE_TTL)
+        resp = Response(data)
+        resp["X-Cache"] = "MISS"
+        return resp

@@ -123,6 +123,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SPECTACULAR_SETTINGS = {
     "TITLE": "Besh-Tashta API",
     "VERSION": "1.0.0",
+
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+    "SCHEMA_PATH_PREFIX_TRIM": True,
+
     "APPEND_COMPONENTS": {
         "securitySchemes": {
             "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
@@ -149,9 +154,11 @@ EMAIL_TIMEOUT = env("EMAIL_TIMEOUT", cast=int, default=10)
 SOCIAL_AUTH_GOOGLE_CLIENT_ID = env("SOCIAL_AUTH_GOOGLE_CLIENT_ID", default="")
 SOCIAL_AUTH_APPLE_CLIENT_ID = env("SOCIAL_AUTH_APPLE_CLIENT_ID", default="")
 
-import os
+GOOGLE_CLIENT_ID = SOCIAL_AUTH_GOOGLE_CLIENT_ID
+APPLE_CLIENT_ID = SOCIAL_AUTH_APPLE_CLIENT_ID
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+REDIS_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
 
 # Django cache -> Redis (для аналитики)
 CACHES = {

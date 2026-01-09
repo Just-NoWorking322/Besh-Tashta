@@ -11,11 +11,29 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = ("id", "name", "currency", "created_at")
 
 
+
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ("id", "name", "type", "created_at")
+        fields = ("id", "name", "type")
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if user:
+            qs = Category.objects.filter(
+                user=user,
+                name=attrs.get("name"),
+                type=attrs.get("type"),
+            )
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+
+            if qs.exists():
+                raise serializers.ValidationError({"name": "Такая категория уже существует."})
+
+        return attrs
 
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -26,12 +44,16 @@ class TransactionSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        # аккаунт/категория должны принадлежать юзеру
         user = self.context["request"].user
-        if attrs["account"].user_id != user.id:
+
+        account = attrs.get("account")
+        if account and account.user_id != user.id:
             raise serializers.ValidationError("Нельзя использовать чужой account.")
-        if attrs.get("category") and attrs["category"].user_id != user.id:
+
+        category = attrs.get("category")
+        if category and category.user_id != user.id:
             raise serializers.ValidationError("Нельзя использовать чужую category.")
+
         return attrs
 
 
@@ -45,5 +67,5 @@ class DebtSerializer(serializers.ModelSerializer):
         read_only_fields = ("is_closed", "closed_at")
 
 
-class DebtCloseSerializer(serializers.Serializer):
-    is_closed = serializers.BooleanField()
+# class DebtCloseSerializer(serializers.Serializer):
+#     is_closed = serializers.BooleanField() для принятия боди подойдет но сейчас не нужен   

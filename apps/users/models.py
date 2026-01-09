@@ -10,8 +10,6 @@ class UserManager(BaseUserManager):
     def create_user(self, email, phone_number, password=None, **extra_fields):
         if not email:
             raise ValueError("Email обязателен")
-        if not phone_number:
-            raise ValueError("Номер телефона обязателен")
 
         email = self.normalize_email(email)
         user = self.model(email=email, phone_number=phone_number, **extra_fields)
@@ -45,6 +43,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     phone_number = models.CharField(
         max_length=15,
         unique=True,
+        null=True,
+        blank=True,
         verbose_name="Номер телефона",
     )
     first_name = models.CharField(max_length=50, blank=True, verbose_name="Имя")

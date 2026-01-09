@@ -32,6 +32,18 @@ Users:
   - my privileges
   - is_premium (если есть купленные привилегии)
 
+регистрация
+логин
+refresh / blacklist
+logout
+me (GET / PATCH)
+смена пароля
+восстановление пароля (SMTP)
+Google auth
+привилегии (покупка + получение)
+JWT + permissions
+CORS / настройки — ок
+
 Motivation:
 - motivation items (контент карточек)
 - types:

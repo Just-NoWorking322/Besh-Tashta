@@ -56,7 +56,7 @@ class RegisterSerializer(serializers.Serializer):
     def create(self, validated_data):
         user = User.objects.create_user(
             email=validated_data["email"],
-            phone_number=validated_data["phone_number"],
+            phone = validated_data["phone_number"].strip(),
             password=validated_data["password"],
             first_name=validated_data.get("first_name", ""),
             last_name=validated_data.get("last_name", ""),
@@ -100,3 +100,43 @@ class LogoutSerializer(serializers.Serializer):
         refresh = RefreshToken(self.validated_data["refresh"])
         refresh.blacklist()
         return {}
+    
+
+class MeUpdateSerializer(serializers.ModelSerializer):
+    # profile fields via source
+    bio = serializers.CharField(source="profile.bio", required=False, allow_blank=True, allow_null=True)
+    avatar = serializers.ImageField(source="profile.avatar", required=False, allow_null=True)
+    date_of_birth = serializers.DateField(source="profile.date_of_birth", required=False, allow_null=True)
+
+    goals_achieved = serializers.IntegerField(source="profile.goals_achieved", required=False)
+    saving_days = serializers.IntegerField(source="profile.saving_days", required=False)
+
+    notifications_enabled = serializers.BooleanField(source="profile.notifications_enabled", required=False)
+    theme = serializers.CharField(source="profile.theme", required=False)
+    language = serializers.CharField(source="profile.language", required=False)
+
+    class Meta:
+        model = User
+        fields = (
+            "first_name", "last_name",
+            "bio", "avatar", "date_of_birth",
+            "goals_achieved", "saving_days",
+            "notifications_enabled", "theme", "language",
+        )
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop("profile", {})
+        profile, _ = UserProfile.objects.get_or_create(user=instance)
+
+        # update user fields
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+
+        # update profile fields
+        for k, v in profile_data.items():
+            setattr(profile, k, v)
+        profile.save()
+
+        return instance
+

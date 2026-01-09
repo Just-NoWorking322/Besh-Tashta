@@ -41,32 +41,26 @@ class Category(models.Model):
     def __str__(self):
         return f"{self.name} ({self.type})"
 
-
 class Transaction(models.Model):
-    TYPE_INCOME = "INCOME"
-    TYPE_EXPENSE = "EXPENSE"
+    INCOME = "INCOME"
+    EXPENSE = "EXPENSE"
+
     TYPE_CHOICES = (
-        (TYPE_INCOME, "Доход"),
-        (TYPE_EXPENSE, "Расход"),
+        (INCOME, "Доход"),
+        (EXPENSE, "Расход"),
     )
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
-    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name="transactions")
-    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="transactions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    account = models.ForeignKey("Account", on_delete=models.CASCADE)
+    category = models.ForeignKey("Category", null=True, blank=True, on_delete=models.SET_NULL)
 
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
-    amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
-
-    title = models.CharField(max_length=120, blank=True, default="")
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    title = models.CharField(max_length=255, blank=True, default="")
     note = models.TextField(blank=True, default="")
+    occurred_at = models.DateTimeField()
 
-    occurred_at = models.DateTimeField() 
     created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        verbose_name = "Операция"
-        verbose_name_plural = "Операции"
-        ordering = ["-occurred_at", "-id"]
 
     def __str__(self):
         return f"{self.type} {self.amount}"
