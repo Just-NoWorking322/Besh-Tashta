@@ -3,7 +3,7 @@ from urllib.parse import urlencode
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Sum, Q
+from django.db.models import Sum, Q, Value, DecimalField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -23,6 +23,7 @@ from .serializers import (
 
 CACHE_TTL = 600  # 10 минту
 
+ZERO = Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2))
 # -------------------------
 # Cache helpers
 # -------------------------
@@ -48,7 +49,7 @@ def build_cache_key(prefix: str, user_id: int, params) -> str:
 def invalidate_user_mgmt_cache(user_id: int) -> None:
     try:
         conn = get_redis_connection("default")
-        for key in conn.scan_iter(match=f"beshtash:mgmt:*:u{user_id}:*"):
+        for key in conn.scan_iter(match=f"mgmt:*:u{user_id}:*"):
             conn.delete(key)
     except Exception:
         pass
@@ -103,8 +104,13 @@ class DashboardView(DefaultAccountMixin, APIView):
 
         cache_key = build_cache_key("dashboard", request.user.id, request.query_params)
 
+        # read cache (safe)
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
@@ -112,19 +118,19 @@ class DashboardView(DefaultAccountMixin, APIView):
 
         income = Transaction.objects.filter(
             user=request.user, type=Transaction.INCOME
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         expense = Transaction.objects.filter(
             user=request.user, type=Transaction.EXPENSE
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         receivable = Debt.objects.filter(
             user=request.user, kind=Debt.RECEIVABLE, is_closed=False
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         payable = Debt.objects.filter(
             user=request.user, kind=Debt.PAYABLE, is_closed=False
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         last_transactions = (
             Transaction.objects.filter(user=request.user)
@@ -136,16 +142,18 @@ class DashboardView(DefaultAccountMixin, APIView):
             "balance": str(income - expense),
             "income_total": str(income),
             "expense_total": str(expense),
-            "debts": {
-                "receivable": str(receivable),
-                "payable": str(payable),
-            },
+            "debts": {"receivable": str(receivable), "payable": str(payable)},
             "last_transactions": TransactionSerializer(
                 last_transactions, many=True, context={"request": request}
             ).data,
         }
 
-        cache.set(cache_key, data, CACHE_TTL)
+        # write cache (safe)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
@@ -429,7 +437,11 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
         cache_key = build_cache_key("stats_summary", request.user.id, request.query_params)
 
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
@@ -439,10 +451,10 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
         qs = self.apply_date_range(qs, request, field="occurred_at")
 
         income = qs.filter(type=Transaction.INCOME).aggregate(
-            s=Coalesce(Sum("amount"), Decimal("0"))
+            s=Coalesce(Sum("amount"), ZERO)
         )["s"]
         expense = qs.filter(type=Transaction.EXPENSE).aggregate(
-            s=Coalesce(Sum("amount"), Decimal("0"))
+            s=Coalesce(Sum("amount"), ZERO)
         )["s"]
 
         data = {
@@ -451,50 +463,60 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
             "balance": str(income - expense),
         }
 
-        cache.set(cache_key, data, CACHE_TTL)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
 
 
 class StatsByCategoryView(DateRangeFilterMixin, APIView):
-    """
-    /stats/categories/?type=EXPENSE&from=YYYY-MM-DD&to=YYYY-MM-DD
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         cache_key = build_cache_key("stats_by_category", request.user.id, request.query_params)
 
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
                 return resp
 
         tx_type = request.query_params.get("type", Transaction.EXPENSE)
-
         qs = Transaction.objects.filter(user=request.user, type=tx_type)
         qs = self.apply_date_range(qs, request, field="occurred_at")
 
         rows = (
             qs.values("category_id", "category__name")
-            .annotate(total=Coalesce(Sum("amount"), Decimal("0")))
+            .annotate(total=Coalesce(Sum("amount"), ZERO))
             .order_by("-total")
         )
 
-        items = [
-            {
-                "category_id": r["category_id"],
-                "category_name": r["category__name"] or "Без категории",
-                "total": str(r["total"]),
-            }
-            for r in rows
-        ]
+        data = {
+            "type": tx_type,
+            "items": [
+                {
+                    "category_id": r["category_id"],
+                    "category_name": r["category__name"] or "Без категории",
+                    "total": str(r["total"]),
+                }
+                for r in rows
+            ],
+        }
 
-        data = {"type": tx_type, "items": items}
-        cache.set(cache_key, data, CACHE_TTL)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
