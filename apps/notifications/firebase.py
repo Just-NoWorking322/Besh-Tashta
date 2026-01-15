@@ -18,16 +18,18 @@ def get_firebase_app():
     _app = firebase_admin.initialize_app(cred)
     return _app
 
-
 def send_push(token: str, title: str, body: str, data: dict | None = None):
     app = get_firebase_app()
     if not app:
         return False, "Firebase not configured"
 
-    msg = messaging.Message(
-        token=token,
-        notification=messaging.Notification(title=title, body=body),
-        data={k: str(v) for k, v in (data or {}).items()},
-    )
-    resp = messaging.send(msg, app=app)
-    return True, resp
+    try:
+        msg = messaging.Message(
+            token=token,
+            notification=messaging.Notification(title=title, body=body),
+            data={k: str(v) for k, v in (data or {}).items()},
+        )
+        resp = messaging.send(msg, app=app)
+        return True, resp
+    except Exception as e:
+        return False, str(e)

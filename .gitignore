@@ -14,3 +14,11 @@ staticfiles/
 *.sqlite3
 *.pot
 *.pyc
+
+*.p8
+*.pem
+*.key
+*.crt
+firebase_service_account*.json
+firebase_service_account.json
+besh-tashta-*-firebase-adminsdk-*.json

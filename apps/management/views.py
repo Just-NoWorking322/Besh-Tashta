@@ -13,6 +13,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.motivation.ai import generate_motivation
+from apps.notifications.services import create_and_send_notification
+
+
 from .models import Account, Category, Transaction, Debt
 from .serializers import (
     AccountSerializer,
@@ -35,7 +39,6 @@ def build_cache_key(prefix: str, user_id: int, params) -> str:
     - query params (без refresh)
     """
     items = []
-    # QueryDict: используем lists() чтобы не потерять параметры с несколькими значениями
     for k, values in params.lists():
         if k == "refresh":
             continue
@@ -287,9 +290,33 @@ class TransactionListCreateView(
         if not account:
             account = self.get_or_create_default_account(self.request.user)
 
-        serializer.save(user=self.request.user, account=account)
+        tx = serializer.save(user=self.request.user, account=account)
         invalidate_user_mgmt_cache(self.request.user.id)
 
+        title = (tx.title or "").lower()
+        is_salary = tx.type == Transaction.INCOME and any(x in title for x in ["зп", "зарплата", "salary"])
+        
+        if is_salary:
+            text = generate_motivation("salary_received", amount=tx.amount)
+            create_and_send_notification(
+                user=self.request.user,
+                title="Мотивация",
+                body=text,
+                type_="SYSTEM",
+                payload={"event": "salary_received", "tx_id": tx.id},
+            )
+        BIG_EXPENSE_THRESHOLD = Decimal("1000")  # можешь поменять
+
+        is_big_expense = tx.type == Transaction.EXPENSE and tx.amount >= BIG_EXPENSE_THRESHOLD
+        if is_big_expense:
+            text = generate_motivation("big_expense", amount=tx.amount, ctx={"title": tx.title})
+            create_and_send_notification(
+                user=self.request.user,
+                title="Мотивация",
+                body=text,
+                type_="SYSTEM",
+                payload={"event": "big_expense", "tx_id": tx.id, "amount": str(tx.amount)},
+            )
 
 
 class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -361,8 +388,27 @@ class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        debt = serializer.save(user=self.request.user)
         invalidate_user_mgmt_cache(self.request.user.id)
+
+        
+        event = "debt_created"
+        text = generate_motivation(
+            event,
+            amount=debt.amount,
+            ctx={
+                "person_name": debt.person_name,
+                "kind": debt.kind,  # PAYABLE / RECEIVABLE
+                "due_date": getattr(debt, "due_date", None),
+            },
+        )
+        create_and_send_notification(
+            user=self.request.user,
+            title="Мотивация",
+            body=text,
+            type_="SYSTEM",
+            payload={"event": event, "debt_id": debt.id},
+        )
 
 
 class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -422,10 +468,23 @@ class DebtCloseView(DefaultAccountMixin, APIView):
             note=debt.description or "",
             occurred_at=timezone.now(),
         )
+        text = generate_motivation(
+            "debt_closed",
+            amount=debt.amount,
+            ctx={"person_name": debt.person_name},
+        )
+
+        create_and_send_notification(
+            user=request.user,
+            title="Мотивация",
+            body=text,
+            type_="SYSTEM",
+            payload={"event": "debt_closed", "debt_id": debt.id},
+        )
 
         invalidate_user_mgmt_cache(request.user.id)
         return Response({"detail": "Долг закрыт и добавлен в историю операций."}, status=status.HTTP_200_OK)
-
+    
 
 # -------------------------
 # Stats (cached)
