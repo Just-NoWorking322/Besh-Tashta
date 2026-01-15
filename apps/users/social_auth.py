@@ -95,20 +95,12 @@ def _email_verified_apple(payload: Dict[str, Any]) -> bool:
     return ev in (True, "true", "True", 1, "1")
 
 
-# ---------- Views ----------
 class GoogleAuthView(APIView):
-    """
-    POST /auth/google/
-    Body:
-      - id_token (required)
-      - phone_number (optional)
-      - first_name/last_name (optional)
-    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         token = request.data.get("id_token")
-        phone_number = normalize_phone(request.data.get("phone_number"))
+        phone_number = normalize_phone(request.data.get("phone_number")) or None
         first_name = (request.data.get("first_name") or "").strip()
         last_name = (request.data.get("last_name") or "").strip()
 
@@ -139,33 +131,22 @@ class GoogleAuthView(APIView):
             return Response({"detail": "Google email is not verified"}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            # 1) если соцакк уже есть → логин
-            sa = SocialAccount.objects.select_for_update().filter(provider="google", uid=google_sub).select_related("user").first()
+            sa = (
+                SocialAccount.objects
+                .select_for_update()
+                .select_related("user")
+                .filter(provider="google", uid=google_sub)
+                .first()
+            )
             if sa:
                 return Response(issue_jwt(sa.user), status=status.HTTP_200_OK)
 
-            # 2) если пользователь уже есть по email → привязываем и логиним (телефон уже есть)
-            user_by_email = User.objects.select_for_update().filter(email=email).first()
-            if user_by_email:
-                SocialAccount.objects.create(user=user_by_email, provider="google", uid=google_sub)
-                return Response(issue_jwt(user_by_email), status=status.HTTP_200_OK)
+            user = User.objects.select_for_update().filter(email=email).first()
+            if user:
+                SocialAccount.objects.create(user=user, provider="google", uid=google_sub)
+                return Response(issue_jwt(user), status=status.HTTP_200_OK)
 
-            # 3) нового пользователя нельзя создать без phone_number
-            if not phone_number:
-                signup_token = make_signup_token({
-                    "provider": "google",
-                    "uid": google_sub,
-                    "email": email,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                })
-                return Response(
-                    {"needs_phone": True, "signup_token": signup_token, "email": email},
-                    status=status.HTTP_200_OK
-                )
-
-            # phone должен быть уникален
-            if User.objects.filter(phone_number=phone_number).exists():
+            if phone_number and User.objects.filter(phone_number=phone_number).exists():
                 return Response({"detail": "phone_number already used"}, status=status.HTTP_409_CONFLICT)
 
             user = User.objects.create_user(
@@ -177,32 +158,18 @@ class GoogleAuthView(APIView):
                 is_active=True,
             )
 
-            try:
-                SocialAccount.objects.create(user=user, provider="google", uid=google_sub)
-            except IntegrityError:
-                sa = SocialAccount.objects.filter(provider="google", uid=google_sub).select_related("user").first()
-                if sa:
-                    return Response(issue_jwt(sa.user), status=status.HTTP_200_OK)
-                raise
+            SocialAccount.objects.create(user=user, provider="google", uid=google_sub)
 
         return Response(issue_jwt(user), status=status.HTTP_200_OK)
 
 
 class AppleAuthView(APIView):
-    """
-    POST /auth/apple/
-    Body:
-      - identity_token (required)
-      - email (optional, Apple sometimes gives only first time)
-      - phone_number (optional)
-      - first_name/last_name (optional)
-    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         identity_token = request.data.get("identity_token")
         email_from_client = (request.data.get("email") or "").strip().lower()
-        phone_number = normalize_phone(request.data.get("phone_number"))
+        phone_number = normalize_phone(request.data.get("phone_number")) or None
         first_name = (request.data.get("first_name") or "").strip()
         last_name = (request.data.get("last_name") or "").strip()
 
@@ -227,35 +194,27 @@ class AppleAuthView(APIView):
         if payload.get("email") and not _email_verified_apple(payload):
             return Response({"detail": "Apple email is not verified"}, status=status.HTTP_400_BAD_REQUEST)
 
+        if not email:
+            email = f"apple_{apple_sub}@example.invalid"
+
         with transaction.atomic():
-            sa = SocialAccount.objects.select_for_update().filter(provider="apple", uid=apple_sub).select_related("user").first()
+            sa = (
+                SocialAccount.objects
+                .select_for_update()
+                .select_related("user")
+                .filter(provider="apple", uid=apple_sub)
+                .first()
+            )
             if sa:
                 return Response(issue_jwt(sa.user), status=status.HTTP_200_OK)
 
-            user_by_email = User.objects.select_for_update().filter(email=email).first() if email else None
-            if user_by_email:
-                SocialAccount.objects.create(user=user_by_email, provider="apple", uid=apple_sub)
-                return Response(issue_jwt(user_by_email), status=status.HTTP_200_OK)
+            user = User.objects.select_for_update().filter(email=email).first()
+            if user:
+                SocialAccount.objects.create(user=user, provider="apple", uid=apple_sub)
+                return Response(issue_jwt(user), status=status.HTTP_200_OK)
 
-            if not phone_number:
-                signup_token = make_signup_token({
-                    "provider": "apple",
-                    "uid": apple_sub,
-                    "email": email,  # может быть пусто
-                    "first_name": first_name,
-                    "last_name": last_name,
-                })
-                return Response(
-                    {"needs_phone": True, "signup_token": signup_token, "email": email},
-                    status=status.HTTP_200_OK
-                )
-
-            if User.objects.filter(phone_number=phone_number).exists():
+            if phone_number and User.objects.filter(phone_number=phone_number).exists():
                 return Response({"detail": "phone_number already used"}, status=status.HTTP_409_CONFLICT)
-
-            if not email:
-                # у тебя email обязателен, делаем технический
-                email = f"apple_{apple_sub}@example.invalid"
 
             user = User.objects.create_user(
                 email=email,
@@ -266,13 +225,7 @@ class AppleAuthView(APIView):
                 is_active=True,
             )
 
-            try:
-                SocialAccount.objects.create(user=user, provider="apple", uid=apple_sub)
-            except IntegrityError:
-                sa = SocialAccount.objects.filter(provider="apple", uid=apple_sub).select_related("user").first()
-                if sa:
-                    return Response(issue_jwt(sa.user), status=status.HTTP_200_OK)
-                raise
+            SocialAccount.objects.create(user=user, provider="apple", uid=apple_sub)
 
         return Response(issue_jwt(user), status=status.HTTP_200_OK)
 

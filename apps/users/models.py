@@ -7,7 +7,7 @@ from django.contrib.auth.hashers import make_password, check_password
 from datetime import timedelta
 
 class UserManager(BaseUserManager):
-    def create_user(self, email, phone_number, password=None, **extra_fields):
+    def create_user(self, email, phone_number=None, password=None, **extra_fields):
         if not email:
             raise ValueError("Email обязателен")
 
@@ -21,6 +21,7 @@ class UserManager(BaseUserManager):
 
         user.save(using=self._db)
         return user
+
 
     def create_superuser(self, email, phone_number, password=None, **extra_fields):
         if not password:
@@ -54,7 +55,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False, verbose_name="Доступ в админку")
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["phone_number"]
+    REQUIRED_FIELDS = []
 
     objects = UserManager()
 

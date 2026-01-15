@@ -37,7 +37,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 class RegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    phone_number = serializers.CharField(max_length=15)
+    phone_number = serializers.CharField(required=False, max_length=15)
     password = serializers.CharField(min_length=6, write_only=True)
 
     first_name = serializers.CharField(required=False, allow_blank=True)
@@ -56,7 +56,7 @@ class RegisterSerializer(serializers.Serializer):
     def create(self, validated_data):
         user = User.objects.create_user(
             email=validated_data["email"],
-            phone = validated_data["phone_number"].strip(),
+            phone_number = validated_data.get("phone_number") or None,
             password=validated_data["password"],
             first_name=validated_data.get("first_name", ""),
             last_name=validated_data.get("last_name", ""),
