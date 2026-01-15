@@ -22,21 +22,24 @@ CORS_ALLOW_ALL_ORIGINS = (not PRODUCTION)
 CORS_ALLOW_CREDENTIALS = True
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "jazzmin",
     "drf_spectacular",
     "rest_framework",
     "corsheaders",
     "django_filters",
     "rest_framework_simplejwt.token_blacklist",
-
+    "channels",
     "apps.users",
     "apps.management",
     "apps.motivation",
+    "apps.notifications",	
 ]
 
 AUTH_USER_MODEL = "users.User"
@@ -70,6 +73,15 @@ TEMPLATES = [{
     },
 }]
 
+JAZZMIN_SETTINGS = {
+    "site_title": "Besh-Tashta Admin",
+    "site_header": "Besh-Tashta",
+    "site_brand": "Besh-Tashta",
+    "welcome_sign": "Добро пожаловать в админку",
+    "search_model": ["users.User", "management.Transaction", "management.Debt"],
+}
+
+ASGI_APPLICATION = "core.asgi.application"
 WSGI_APPLICATION = "core.wsgi.application"
 
 DATABASES = {
@@ -118,15 +130,20 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "Besh-Tashta API",
     "VERSION": "1.0.0",
-
     "SERVE_INCLUDE_SCHEMA": False,
+
     "SCHEMA_PATH_PREFIX": r"/api/v1",
     "SCHEMA_PATH_PREFIX_TRIM": True,
+
+    "SERVERS": [
+        {"url": "/api/v1", "description": "API v1"}
+    ],
 
     "APPEND_COMPONENTS": {
         "securitySchemes": {
@@ -169,6 +186,13 @@ CACHES = {
         "KEY_PREFIX": "beshtash",
     }
 }
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
+FIREBASE_SERVICE_ACCOUNT = env("FIREBASE_SERVICE_ACCOUNT", default="")
 
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL 

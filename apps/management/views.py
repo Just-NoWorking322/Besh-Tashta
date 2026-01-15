@@ -3,7 +3,7 @@ from urllib.parse import urlencode
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Sum, Q
+from django.db.models import Sum, Q, Value, DecimalField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -12,6 +12,10 @@ from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.motivation.ai import generate_motivation
+from apps.notifications.services import create_and_send_notification
+
 
 from .models import Account, Category, Transaction, Debt
 from .serializers import (
@@ -23,6 +27,7 @@ from .serializers import (
 
 CACHE_TTL = 600  # 10 минту
 
+ZERO = Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2))
 # -------------------------
 # Cache helpers
 # -------------------------
@@ -34,7 +39,6 @@ def build_cache_key(prefix: str, user_id: int, params) -> str:
     - query params (без refresh)
     """
     items = []
-    # QueryDict: используем lists() чтобы не потерять параметры с несколькими значениями
     for k, values in params.lists():
         if k == "refresh":
             continue
@@ -48,7 +52,7 @@ def build_cache_key(prefix: str, user_id: int, params) -> str:
 def invalidate_user_mgmt_cache(user_id: int) -> None:
     try:
         conn = get_redis_connection("default")
-        for key in conn.scan_iter(match=f"beshtash:mgmt:*:u{user_id}:*"):
+        for key in conn.scan_iter(match=f"mgmt:*:u{user_id}:*"):
             conn.delete(key)
     except Exception:
         pass
@@ -103,8 +107,13 @@ class DashboardView(DefaultAccountMixin, APIView):
 
         cache_key = build_cache_key("dashboard", request.user.id, request.query_params)
 
+        # read cache (safe)
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
@@ -112,19 +121,19 @@ class DashboardView(DefaultAccountMixin, APIView):
 
         income = Transaction.objects.filter(
             user=request.user, type=Transaction.INCOME
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         expense = Transaction.objects.filter(
             user=request.user, type=Transaction.EXPENSE
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         receivable = Debt.objects.filter(
             user=request.user, kind=Debt.RECEIVABLE, is_closed=False
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         payable = Debt.objects.filter(
             user=request.user, kind=Debt.PAYABLE, is_closed=False
-        ).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        ).aggregate(s=Coalesce(Sum("amount"), ZERO))["s"]
 
         last_transactions = (
             Transaction.objects.filter(user=request.user)
@@ -136,16 +145,18 @@ class DashboardView(DefaultAccountMixin, APIView):
             "balance": str(income - expense),
             "income_total": str(income),
             "expense_total": str(expense),
-            "debts": {
-                "receivable": str(receivable),
-                "payable": str(payable),
-            },
+            "debts": {"receivable": str(receivable), "payable": str(payable)},
             "last_transactions": TransactionSerializer(
                 last_transactions, many=True, context={"request": request}
             ).data,
         }
 
-        cache.set(cache_key, data, CACHE_TTL)
+        # write cache (safe)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
@@ -279,9 +290,33 @@ class TransactionListCreateView(
         if not account:
             account = self.get_or_create_default_account(self.request.user)
 
-        serializer.save(user=self.request.user, account=account)
+        tx = serializer.save(user=self.request.user, account=account)
         invalidate_user_mgmt_cache(self.request.user.id)
 
+        title = (tx.title or "").lower()
+        is_salary = tx.type == Transaction.INCOME and any(x in title for x in ["зп", "зарплата", "salary"])
+        
+        if is_salary:
+            text = generate_motivation("salary_received", amount=tx.amount)
+            create_and_send_notification(
+                user=self.request.user,
+                title="Мотивация",
+                body=text,
+                type_="SYSTEM",
+                payload={"event": "salary_received", "tx_id": tx.id},
+            )
+        BIG_EXPENSE_THRESHOLD = Decimal("1000")  # можешь поменять
+
+        is_big_expense = tx.type == Transaction.EXPENSE and tx.amount >= BIG_EXPENSE_THRESHOLD
+        if is_big_expense:
+            text = generate_motivation("big_expense", amount=tx.amount, ctx={"title": tx.title})
+            create_and_send_notification(
+                user=self.request.user,
+                title="Мотивация",
+                body=text,
+                type_="SYSTEM",
+                payload={"event": "big_expense", "tx_id": tx.id, "amount": str(tx.amount)},
+            )
 
 
 class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -353,8 +388,27 @@ class DebtListCreateView(DateRangeFilterMixin, generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        debt = serializer.save(user=self.request.user)
         invalidate_user_mgmt_cache(self.request.user.id)
+
+        
+        event = "debt_created"
+        text = generate_motivation(
+            event,
+            amount=debt.amount,
+            ctx={
+                "person_name": debt.person_name,
+                "kind": debt.kind,  # PAYABLE / RECEIVABLE
+                "due_date": getattr(debt, "due_date", None),
+            },
+        )
+        create_and_send_notification(
+            user=self.request.user,
+            title="Мотивация",
+            body=text,
+            type_="SYSTEM",
+            payload={"event": event, "debt_id": debt.id},
+        )
 
 
 class DebtDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -414,10 +468,23 @@ class DebtCloseView(DefaultAccountMixin, APIView):
             note=debt.description or "",
             occurred_at=timezone.now(),
         )
+        text = generate_motivation(
+            "debt_closed",
+            amount=debt.amount,
+            ctx={"person_name": debt.person_name},
+        )
+
+        create_and_send_notification(
+            user=request.user,
+            title="Мотивация",
+            body=text,
+            type_="SYSTEM",
+            payload={"event": "debt_closed", "debt_id": debt.id},
+        )
 
         invalidate_user_mgmt_cache(request.user.id)
         return Response({"detail": "Долг закрыт и добавлен в историю операций."}, status=status.HTTP_200_OK)
-
+    
 
 # -------------------------
 # Stats (cached)
@@ -429,7 +496,11 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
         cache_key = build_cache_key("stats_summary", request.user.id, request.query_params)
 
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
@@ -439,10 +510,10 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
         qs = self.apply_date_range(qs, request, field="occurred_at")
 
         income = qs.filter(type=Transaction.INCOME).aggregate(
-            s=Coalesce(Sum("amount"), Decimal("0"))
+            s=Coalesce(Sum("amount"), ZERO)
         )["s"]
         expense = qs.filter(type=Transaction.EXPENSE).aggregate(
-            s=Coalesce(Sum("amount"), Decimal("0"))
+            s=Coalesce(Sum("amount"), ZERO)
         )["s"]
 
         data = {
@@ -451,50 +522,60 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
             "balance": str(income - expense),
         }
 
-        cache.set(cache_key, data, CACHE_TTL)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
 
 
 class StatsByCategoryView(DateRangeFilterMixin, APIView):
-    """
-    /stats/categories/?type=EXPENSE&from=YYYY-MM-DD&to=YYYY-MM-DD
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         cache_key = build_cache_key("stats_by_category", request.user.id, request.query_params)
 
         if request.query_params.get("refresh") != "1":
-            cached = cache.get(cache_key)
+            try:
+                cached = cache.get(cache_key)
+            except Exception:
+                cached = None
+
             if cached is not None:
                 resp = Response(cached)
                 resp["X-Cache"] = "HIT"
                 return resp
 
         tx_type = request.query_params.get("type", Transaction.EXPENSE)
-
         qs = Transaction.objects.filter(user=request.user, type=tx_type)
         qs = self.apply_date_range(qs, request, field="occurred_at")
 
         rows = (
             qs.values("category_id", "category__name")
-            .annotate(total=Coalesce(Sum("amount"), Decimal("0")))
+            .annotate(total=Coalesce(Sum("amount"), ZERO))
             .order_by("-total")
         )
 
-        items = [
-            {
-                "category_id": r["category_id"],
-                "category_name": r["category__name"] or "Без категории",
-                "total": str(r["total"]),
-            }
-            for r in rows
-        ]
+        data = {
+            "type": tx_type,
+            "items": [
+                {
+                    "category_id": r["category_id"],
+                    "category_name": r["category__name"] or "Без категории",
+                    "total": str(r["total"]),
+                }
+                for r in rows
+            ],
+        }
 
-        data = {"type": tx_type, "items": items}
-        cache.set(cache_key, data, CACHE_TTL)
+        try:
+            cache.set(cache_key, data, CACHE_TTL)
+        except Exception:
+            pass
+
         resp = Response(data)
         resp["X-Cache"] = "MISS"
         return resp
