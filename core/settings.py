@@ -144,7 +144,14 @@ SPECTACULAR_SETTINGS = {
     "SERVERS": [
         {"url": "/api/v1", "description": "API v1"}
     ],
-
+    'ENUM_NAME_OVERRIDES': {
+        'NotificationTypeEnum': 'apps.notifications.models.Notification.Type', 
+        'MotivationTypeEnum': 'apps.motivation.models.MotivationItem.Type',
+        'SocialProviderEnum': 'apps.users.models.SocialAccount.PROVIDER_CHOICES',
+        'OtpPurposeEnum': 'apps.users.models.OneTimeCode.PURPOSE_CHOICES',
+        'TransactionTypeEnum': 'apps.management.models.Transaction.Type',
+        'DebtKindEnum': 'apps.management.models.Debt.Kind',
+    },
     "APPEND_COMPONENTS": {
         "securitySchemes": {
             "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}

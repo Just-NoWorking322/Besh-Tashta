@@ -19,6 +19,27 @@ from google.oauth2 import id_token as google_id_token
 
 from apps.users.models import SocialAccount
 from django.contrib.auth import get_user_model
+from drf_spectacular.utils import extend_schema
+from rest_framework import serializers
+from drf_spectacular.utils import OpenApiTypes, extend_schema
+from .swagger_serializers import AuthResponseSerializer, SocialCompleteRequestSerializer, GoogleAuthRequestSerializer, AppleAuthRequestSerializer
+
+class SocialAuthResponseSerializer(serializers.Serializer):
+    access = serializers.CharField(help_text="Твой новенький Access токен")
+    refresh = serializers.CharField(help_text="Refresh токен, чтобы обновлять сессию")
+
+class GoogleRequestSerializer(serializers.Serializer):
+    id_token = serializers.CharField(required=True, help_text="Google ID Token")
+    phone_number = serializers.CharField(required=False)
+    first_name = serializers.CharField(required=False)
+    last_name = serializers.CharField(required=False)
+
+class AppleRequestSerializer(serializers.Serializer):
+    identity_token = serializers.CharField(required=True)
+    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(required=False)
+    first_name = serializers.CharField(required=False)
+    last_name = serializers.CharField(required=False)
 
 User = get_user_model()
 
@@ -97,7 +118,11 @@ def _email_verified_apple(payload: Dict[str, Any]) -> bool:
 
 class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Social Auth'],
+        request=GoogleAuthRequestSerializer,
+        responses={200: AuthResponseSerializer}
+    )
     def post(self, request):
         token = request.data.get("id_token")
         phone_number = normalize_phone(request.data.get("phone_number")) or None
@@ -165,7 +190,12 @@ class GoogleAuthView(APIView):
 
 class AppleAuthView(APIView):
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Social Auth'],
+        summary="Вход через Apple",
+        request=AppleRequestSerializer,
+        responses={200: AuthResponseSerializer}
+    )
     def post(self, request):
         identity_token = request.data.get("identity_token")
         email_from_client = (request.data.get("email") or "").strip().lower()
@@ -236,7 +266,11 @@ class SocialCompleteView(APIView):
     Body: {signup_token, phone_number, first_name?, last_name?}
     """
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Social Auth'],
+        request=SocialCompleteRequestSerializer,
+        responses={200: AuthResponseSerializer}
+    )
     def post(self, request):
         token = request.data.get("signup_token")
         phone_number = normalize_phone(request.data.get("phone_number"))

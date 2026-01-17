@@ -18,6 +18,5 @@ urlpatterns = [
     path("notifications/read-all/", NotificationReadAllView.as_view()),
     path("devices/", DeviceTokenUpsertView.as_view()),
     path("test/", TestNotifyView.as_view()),
-    path("", NotificationListView.as_view()),
     
 ]

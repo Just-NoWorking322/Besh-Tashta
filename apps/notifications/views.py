@@ -8,11 +8,20 @@ from apps.notifications.models import CalendarEvent, Notification, DeviceToken
 from apps.notifications.serializers import CalendarEventSerializer, NotificationSerializer, DeviceTokenSerializer, NotificationSerializer
 from apps.notifications.services import create_and_send_notification
 
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, OpenApiExample
+
 
 class EventListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CalendarEventSerializer
-
+    @extend_schema(
+        tags=['Notifications'],
+        summary="Список событий календаря",
+        parameters=[
+            OpenApiParameter("from", OpenApiTypes.DATE, description="Начало периода (YYYY-MM-DD)"),
+            OpenApiParameter("to", OpenApiTypes.DATE, description="Конец периода (YYYY-MM-DD)"),
+        ]
+    )
     def get_queryset(self):
         qs = CalendarEvent.objects.filter(user=self.request.user)
 
@@ -51,17 +60,15 @@ class EventDetailView(generics.RetrieveUpdateDestroyAPIView):
         return CalendarEvent.objects.filter(user=self.request.user)
 
 
-class NotificationListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = NotificationSerializer
-
-    def get_queryset(self):
-        return Notification.objects.filter(user=self.request.user)
-
-
 class NotificationReadView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Notifications'],
+        summary="Прочитать одно уведомление",
+        # Вместо просто "string" показываем объект
+        responses={200: OpenApiTypes.OBJECT}, 
+        examples=[OpenApiExample('Success', value={"detail": "ok"})]
+    )
     def post(self, request, pk: int):
         n = Notification.objects.filter(user=request.user, pk=pk).first()
         if not n:
@@ -101,7 +108,12 @@ class DeviceTokenUpsertView(generics.CreateAPIView):
 
 class TestNotifyView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Notifications'],
+        summary="Отправить тестовое пуш-уведомление",
+        responses={201: OpenApiTypes.OBJECT},
+        examples=[OpenApiExample('Success', value={"id": 105})]
+    )
     def post(self, request):
         title = request.data.get("title", "Тест")
         body = request.data.get("body", "Проверка уведомлений")
@@ -120,4 +132,6 @@ class NotificationListView(generics.ListAPIView):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Notification.objects.none()
         return Notification.objects.filter(user=self.request.user)

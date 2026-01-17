@@ -9,7 +9,8 @@ from rest_framework import generics
 
 from .models import MotivationItem
 from .serializers import MotivationItemListSerializer, MotivationItemDetailSerializer
-
+from .serializers_swagger import MotivationFeedResponseSerializer
+from drf_spectacular.utils import extend_schema
 
 class DailyPickMixin:
     """
@@ -28,7 +29,12 @@ class DailyPickMixin:
 
 class MotivationFeedView(DailyPickMixin, APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Motivation'],
+        summary="Главная лента мотивации и советов",
+        description="Возвращает цитату дня, советы и динамические карточки на основе баланса.",
+        responses={200: MotivationFeedResponseSerializer}
+    )
     def get(self, request):
         limit = int(request.query_params.get("limit", 10))
 

@@ -9,6 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from drf_spectacular.utils import extend_schema, OpenApiTypes
 
 from apps.users.models import UserProfile, UserPrivilege, Privilege
 from .serializers import (
@@ -18,7 +19,9 @@ from .serializers import (
     UserProfileSerializer,
     ChangePasswordSerializer,
     LogoutSerializer,
+    MeUpdateSerializer,
 )
+from .swagger_serializers import AuthResponseSerializer, RegisterResponseSerializer, MeResponseSerializer, PrivilegeResponseSerializer
 
 
 # ---------------------------
@@ -28,7 +31,11 @@ from .serializers import (
 class PrivilegeListView(APIView):
     # обычно тарифы/привилегии показывают до логина
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Privileges'],
+        summary="Список доступных тарифов",
+        responses={200: PrivilegeResponseSerializer(many=True)}
+    )
     def get(self, request):
         qs = Privilege.objects.all().order_by("price", "id")
         data = [
@@ -61,7 +68,11 @@ class BuyPrivilegeView(APIView):
 
 class MyPrivilegesView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Privileges'],
+        summary="Мои купленные привилегии",
+        responses={200: PrivilegeResponseSerializer(many=True)}
+    )
     def get(self, request):
         qs = (
             UserPrivilege.objects
@@ -129,23 +140,34 @@ class ProfileStatsMixin:
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Auth'],
+        request=RegisterSerializer,
+        responses={201: RegisterResponseSerializer} # Теперь тут не будет additionalProp
+    )
+    
     def post(self, request):
         ser = RegisterSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         user = ser.save()
         return Response({"detail": "OK", "user_id": user.id}, status=status.HTTP_201_CREATED)
 
-
 class LoginView(APIView):
     permission_classes = [AllowAny]
-
+    @extend_schema(
+        tags=['Auth'],
+        request=LoginSerializer,
+        responses={200: AuthResponseSerializer}
+    )
+    
     def post(self, request):
         ser = LoginSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         return Response(ser.validated_data, status=status.HTTP_200_OK)
+    
+    permission_classes = [AllowAny]
 
-
+    
 class LogoutView(APIView):
     """
     POST /auth/logout/  { "refresh": "..." }
@@ -165,37 +187,25 @@ class LogoutView(APIView):
 # ---------------------------
 
 class MeView(ProfileStatsMixin, APIView):
-    """
-    GET  /me/      -> профиль + статистика (как на экране)
-    PATCH /me/     -> обновить user/profile
-
-    Поддерживает:
-    - JSON: {"user": {...}, "profile": {...}}
-    - multipart/form-data:
-        user = '{"first_name":"Ali"}'
-        profile = '{"bio":"hi"}'
-        avatar = <file>
-    """
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
-
+    @extend_schema(
+        tags=['Profile'],
+        request=MeUpdateSerializer,
+        responses={200: MeResponseSerializer} 
+    )
+    
     def get(self, request):
         profile = self.get_profile(request.user)
-
         stats = self.calc_money_stats(request.user)
-        premium = self.is_premium(request.user)
-
         return Response({
             "user": UserSerializer(request.user).data,
             "profile": UserProfileSerializer(profile, context={"request": request}).data,
-            "is_premium": premium,
-            "stats": {
-                "goals_achieved": profile.goals_achieved,
-                "saving_days": profile.saving_days,
-                **stats,
-            }
-        }, status=status.HTTP_200_OK)
+            "is_premium": self.is_premium(request.user),
+            "stats": {**stats, "goals_achieved": profile.goals_achieved}
+        })
 
+    
     def patch(self, request):
         profile = self.get_profile(request.user)
 

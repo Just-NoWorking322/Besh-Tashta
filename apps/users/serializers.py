@@ -2,6 +2,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from apps.users.models import User, UserProfile, UserPrivilege
 
+from drf_spectacular.utils import extend_schema_field
 
 class UserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
@@ -9,12 +10,9 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ("id", "email", "phone_number", "first_name", "last_name", "full_name")
-
     def get_full_name(self, obj):
-        name = f"{obj.first_name} {obj.last_name}".strip()
-        return name if name else obj.email
-
-
+            return f"{obj.first_name} {obj.last_name}".strip() or obj.email
+ 
 class UserProfileSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
 
@@ -26,13 +24,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "notifications_enabled", "theme", "language",
         )
         extra_kwargs = {"avatar": {"write_only": True}}
-
     def get_avatar_url(self, obj):
-        request = self.context.get("request")
-        if obj.avatar and hasattr(obj.avatar, "url") and request:
-            return request.build_absolute_uri(obj.avatar.url)
+        if obj.avatar:
+            return obj.avatar.url
         return None
-
 
 
 class RegisterSerializer(serializers.Serializer):

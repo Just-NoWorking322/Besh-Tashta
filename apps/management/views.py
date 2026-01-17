@@ -16,7 +16,13 @@ from rest_framework.views import APIView
 from apps.motivation.ai import generate_motivation
 from apps.notifications.services import create_and_send_notification
 
-
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, OpenApiExample
+from .serializers_swagger import (
+    DashboardResponseSerializer,
+    DebtCloseResponseSerializer,
+    StatsByCategoryResponseSerializer,
+    StatsSummaryResponseSerializer,
+)
 from .models import Account, Category, Transaction, Debt
 from .serializers import (
     AccountSerializer,
@@ -101,7 +107,42 @@ class DateRangeFilterMixin:
 # -------------------------
 class DashboardView(DefaultAccountMixin, APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Management'],
+        summary="Дашборд: баланс, долги и последние транзакции",
+        responses={200: DashboardResponseSerializer},
+        examples=[
+            OpenApiExample(
+                'Пример ответа Дашборда',
+                value={
+                    "total_balance": "150000.00",
+                    "monthly_income": "50000.00",
+                    "monthly_expense": "35000.00",
+                    "balance": "15000.00",
+                    "income_total": "500000.00",
+                    "expense_total": "350000.00",
+                    "debts": {
+                        "Иван": "5000.00",
+                        "Мама": "1500.00"
+                    },
+                    "last_transactions": [
+                        {
+                            "id": 1,
+                            "account": 1,
+                            "category": 2,
+                            "type": "INCOME",
+                            "amount": "1000.00",
+                            "title": "Зарплата",
+                            "note": "Бонус",
+                            "occurred_at": "2026-01-17T08:00:00Z",
+                            "created_at": "2026-01-17T08:00:00Z"
+                        }
+                    ]
+                },
+                response_only=True, # Показываем только в ответах
+            )
+        ]
+    )
     def get(self, request):
         self.get_or_create_default_account(request.user)
 
@@ -439,7 +480,11 @@ class DebtCloseView(DefaultAccountMixin, APIView):
     - PAYABLE -> EXPENSE
     """
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Management'],
+        summary="Закрыть долг полностью",
+        responses={200: DebtCloseResponseSerializer}
+    )
     @transaction.atomic
     def post(self, request, pk: int):
         debt = Debt.objects.filter(user=request.user, pk=pk).first()
@@ -491,7 +536,15 @@ class DebtCloseView(DefaultAccountMixin, APIView):
 # -------------------------
 class StatsSummaryView(DateRangeFilterMixin, APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Management'],
+        summary="Краткая сводка: доходы/расходы",
+        parameters=[
+            OpenApiParameter("from", OpenApiTypes.DATE, description="Начальная дата (YYYY-MM-DD)"),
+            OpenApiParameter("to", OpenApiTypes.DATE, description="Конечная дата (YYYY-MM-DD)"),
+        ],
+        responses={200: StatsSummaryResponseSerializer}
+    )
     def get(self, request):
         cache_key = build_cache_key("stats_summary", request.user.id, request.query_params)
 
@@ -534,7 +587,15 @@ class StatsSummaryView(DateRangeFilterMixin, APIView):
 
 class StatsByCategoryView(DateRangeFilterMixin, APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=['Management'],
+        summary="Статистика по категориям",
+        parameters=[
+            OpenApiParameter("from", OpenApiTypes.DATE, description="Начало периода (YYYY-MM-DD)"),
+            OpenApiParameter("to", OpenApiTypes.DATE, description="Конец периода (YYYY-MM-DD)"),
+        ],
+        responses={200: StatsByCategoryResponseSerializer(many=True)}
+    )
     def get(self, request):
         cache_key = build_cache_key("stats_by_category", request.user.id, request.query_params)
 
